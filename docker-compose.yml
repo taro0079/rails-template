@@ -1,0 +1,27 @@
+version: '3'
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_USER: user
+      MYSQL_ROOT_PASSWORD: pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - db-data:/var/lib/mysql
+  web:
+    # command: >
+    #   bash -c "rm -f /docker_rails_test/tmp/pids/server.pid && rails server"
+    build: .
+    depends_on:
+      - db
+    environment:
+      DATABASE_PASSWORD: password
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/docker_rails_test
+      - bundle:/usr/local/bundle
+volumes:
+  db-data:
+  bundle:
