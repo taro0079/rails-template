@@ -1,14 +1,13 @@
 # syntax = docker/dockerfile:1
 
-# This Dockerfile is designed for production, not development. Use with Kamal or build'n'run by hand:
-# docker build -t my-app .
-# docker run -d -p 80:80 -p 443:443 --name my-app -e RAILS_MASTER_KEY=<value from config/master.key> my-app
-
-# Make sure RUBY_VERSION matches the Ruby version in .ruby-version
+# ARG for Ruby version and Rails environment
 ARG RUBY_VERSION=3.3.3
+ARG RAILS_ENV=development
+
+# Base stage with shared setup
 FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
 
-# Rails app lives here
+# Set working directory for the Rails app
 WORKDIR /rails
 
 # Install base packages
@@ -16,54 +15,54 @@ RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y curl libjemalloc2 libvips sqlite3 && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
-# Set production environment
-ENV RAILS_ENV="production" \
-    BUNDLE_DEPLOYMENT="1" \
-    BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development"
+# Set environment variables, including RAILS_ENV (development or production)
+ENV RAILS_ENV=${RAILS_ENV} \
+    BUNDLE_PATH="/usr/local/bundle"
 
-# Throw-away build stage to reduce size of final image
+# Install additional packages for the build stage
 FROM base AS build
 
-# Install packages needed to build gems
+# Install build essentials and git
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y build-essential git pkg-config && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
-# Install application gems
+# Copy Gemfile and Gemfile.lock, install gems
 COPY Gemfile Gemfile.lock ./
-RUN bundle install && \
-    rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git && \
-    bundle exec bootsnap precompile --gemfile
+RUN bundle install
 
 # Copy application code
 COPY . .
 
-# Precompile bootsnap code for faster boot times
-RUN bundle exec bootsnap precompile app/ lib/
+# Install Node.js, Yarn, and other packages for development only if RAILS_ENV is development
+RUN if [ "$RAILS_ENV" = "development" ]; then \
+    apt-get update -qq && apt-get install --no-install-recommends -y nodejs yarn vim && yarn install; \
+    fi
 
-# Precompiling assets for production without requiring secret RAILS_MASTER_KEY
-RUN SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile
+# Precompile assets and bootsnap code for production only if RAILS_ENV is production
+RUN if [ "$RAILS_ENV" = "production" ]; then \
+    SECRET_KEY_BASE_DUMMY=1 ./bin/rails assets:precompile && \
+    bundle exec bootsnap precompile app/ lib/; \
+    fi
 
-
-
-
-# Final stage for app image
+# Final stage for the app image
 FROM base
 
-# Copy built artifacts: gems, application
+# Copy built artifacts (gems, application) from the build stage
 COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
 COPY --from=build /rails /rails
 
-# Run and own only the runtime files as a non-root user for security
+# Set non-root user for security purposes
 RUN groupadd --system --gid 1000 rails && \
     useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash && \
     chown -R rails:rails db log storage tmp
 USER 1000:1000
 
-# Entrypoint prepares the database.
+# Set entrypoint
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 
-# Start the server by default, this can be overwritten at runtime
+# Expose the default Rails port
 EXPOSE 3000
-CMD ["./bin/rails", "server"]
+
+# Command to run the Rails server (bind to 0.0.0.0 for both development and production)
+CMD ["./bin/rails", "server", "-b", "0.0.0.0"]
